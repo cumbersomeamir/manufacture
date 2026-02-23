@@ -8,6 +8,7 @@ export function createConversationModel({
   subject = "",
   message,
   parsed = null,
+  metadata = null,
 }) {
   return {
     id: randomUUID(),
@@ -18,6 +19,7 @@ export function createConversationModel({
     subject,
     message,
     parsed,
+    metadata,
     createdAt: new Date().toISOString(),
   };
 }

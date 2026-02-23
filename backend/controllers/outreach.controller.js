@@ -3,7 +3,7 @@ import { classifyHumanIntervention } from "../agents/classifier.agent.js";
 import { createConversationModel } from "../models/Conversation.js";
 import { sendOutreachDrafts } from "../services/outreach.service.js";
 import { parseSupplierReply } from "../services/responseIntelligence.service.js";
-import { simulateSupplierReplies } from "../services/supplierSimulation.service.js";
+import { loadProjectRepliesFromInbox } from "../services/inboxSync.service.js";
 import { getProjectById, patchProject } from "../store/project.store.js";
 import { setChecklistItem, setModuleStatus } from "../services/projectState.service.js";
 import { CHECKLIST_KEYS } from "../services/checklist.service.js";
@@ -18,7 +18,7 @@ function resolveIntervention(parsed, replyText) {
 }
 
 async function applyParsedReplies({ projectId, replyRecords }) {
-  if (!replyRecords.length) return project;
+  if (!replyRecords.length) return getProjectById(projectId);
 
   const anyRequiresHuman = replyRecords.some((record) => record.intervention.requiresHuman);
 
@@ -52,8 +52,8 @@ async function applyParsedReplies({ projectId, replyRecords }) {
       CHECKLIST_KEYS.RESPONSE_ANALYSIS,
       anyRequiresHuman ? "in_progress" : "validated",
       anyRequiresHuman
-        ? "Some supplier replies need human review."
-        : `Parsed ${replyRecords.length} supplier replies.`,
+        ? "Some supplier replies require human review."
+        : `Parsed ${replyRecords.length} supplier replies from inbox/manual ingest.`,
       anyRequiresHuman ? "Review flagged replies for constraints and legal terms." : "",
     );
     setModuleStatus(draft, "responses", anyRequiresHuman ? "in_progress" : "validated");
@@ -64,10 +64,11 @@ async function applyParsedReplies({ projectId, replyRecords }) {
         draft,
         CHECKLIST_KEYS.NEGOTIATION,
         "in_progress",
-        "Ready to negotiate with top suppliers.",
+        "Supplier responses are ready for negotiation.",
       );
     }
 
+    draft.lastReplySyncAt = new Date().toISOString();
     return draft;
   });
 }
@@ -113,7 +114,6 @@ export async function prepareOutreachHandler(req, res) {
 
 export async function sendOutreachHandler(req, res) {
   const { projectId } = req.params;
-  const autoSimulate = req.body?.autoSimulate !== false;
   const project = await getProjectById(projectId);
   if (!project) {
     return res.status(404).json({ error: "Project not found" });
@@ -122,82 +122,69 @@ export async function sendOutreachHandler(req, res) {
     return res.status(400).json({ error: "No drafts prepared" });
   }
 
-  const messages = sendOutreachDrafts({
-    projectId,
-    drafts: project.outreachDrafts,
-  });
-
-  const updated = await patchProject(projectId, (draft) => {
-    draft.conversations = [...messages, ...draft.conversations];
-    draft.outreachDrafts = draft.outreachDrafts.map((entry) => ({
-      ...entry,
-      status: "sent",
-      sentAt: new Date().toISOString(),
-    }));
-
-    draft.suppliers = draft.suppliers.map((supplier) => ({
-      ...supplier,
-      status: draft.outreachDrafts.some((entry) => entry.supplierId === supplier.id)
-        ? "contacted"
-        : supplier.status,
-      updatedAt: new Date().toISOString(),
-    }));
-
-    setModuleStatus(draft, "outreach", "validated");
-    setChecklistItem(
-      draft,
-      CHECKLIST_KEYS.OUTREACH_RFQ,
-      "validated",
-      `Sent ${messages.length} RFQ messages.`,
-    );
-    setModuleStatus(draft, "responses", "in_progress");
-    return draft;
-  });
-
-  if (!autoSimulate) {
-    return res.json(updated);
-  }
-
-  const simulated = simulateSupplierReplies({
-    project: updated,
-    supplierIds: updated.outreachDrafts.map((entry) => entry.supplierId),
-  });
-
-  const replyRecords = [];
-  for (const item of simulated) {
-    const supplier = updated.suppliers.find((candidate) => candidate.id === item.supplierId);
-    if (!supplier) continue;
-
-    const parsed = await parseSupplierReply({
-      project: updated,
-      supplier,
-      replyText: item.replyText,
-    });
-    const intervention = resolveIntervention(parsed, item.replyText);
-    const conversation = createConversationModel({
+  try {
+    const { sentConversations, failures } = await sendOutreachDrafts({
       projectId,
-      supplierId: item.supplierId,
-      direction: "inbound",
-      channel: "email",
-      subject: item.subject,
-      message: item.replyText,
-      parsed,
+      drafts: project.outreachDrafts,
+      suppliers: project.suppliers,
     });
 
-    replyRecords.push({
-      supplierId: item.supplierId,
-      parsed,
-      intervention,
-      conversation,
+    const updated = await patchProject(projectId, (draft) => {
+      draft.conversations = [...sentConversations, ...draft.conversations];
+      draft.outreachDrafts = draft.outreachDrafts.map((entry) => {
+        const failed = failures.find((item) => item.supplierId === entry.supplierId);
+        return {
+          ...entry,
+          status: failed ? "failed" : "sent",
+          sentAt: failed ? entry.sentAt : new Date().toISOString(),
+          error: failed ? failed.reason : undefined,
+        };
+      });
+
+      draft.suppliers = draft.suppliers.map((supplier) => {
+        const wasDrafted = draft.outreachDrafts.some((entry) => entry.supplierId === supplier.id);
+        const failed = failures.some((item) => item.supplierId === supplier.id);
+        return {
+          ...supplier,
+          status: wasDrafted ? (failed ? "outreach_failed" : "contacted") : supplier.status,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+
+      if (sentConversations.length > 0) {
+        setModuleStatus(draft, "outreach", "validated");
+        setChecklistItem(
+          draft,
+          CHECKLIST_KEYS.OUTREACH_RFQ,
+          "validated",
+          `Sent ${sentConversations.length} RFQ messages.`,
+        );
+        setModuleStatus(draft, "responses", "in_progress");
+      } else {
+        setModuleStatus(draft, "outreach", "blocked");
+        setChecklistItem(
+          draft,
+          CHECKLIST_KEYS.OUTREACH_RFQ,
+          "blocked",
+          "No outreach emails were sent due to delivery failures.",
+          "Fix SMTP or supplier emails and retry outreach.",
+        );
+      }
+
+      return draft;
+    });
+
+    return res.json({
+      project: updated,
+      sentCount: sentConversations.length,
+      failures,
+    });
+  } catch (error) {
+    return res.status(503).json({
+      error: "Failed to send outreach",
+      message: error instanceof Error ? error.message : "Unknown error",
     });
   }
-
-  const finalProject = await applyParsedReplies({ projectId, replyRecords });
-
-  return res.json({
-    project: finalProject,
-    simulatedReplies: simulated.length,
-  });
 }
 
 export async function ingestReplyHandler(req, res) {
@@ -234,6 +221,9 @@ export async function ingestReplyHandler(req, res) {
       subject,
       message: replyText,
       parsed,
+      metadata: {
+        source: "manual_ingest",
+      },
     });
 
     const updated = await applyParsedReplies({
@@ -261,54 +251,75 @@ export async function ingestReplyHandler(req, res) {
   }
 }
 
-export async function simulateRepliesHandler(req, res) {
+export async function syncRepliesHandler(req, res) {
   const { projectId } = req.params;
   const project = await getProjectById(projectId);
   if (!project) {
     return res.status(404).json({ error: "Project not found" });
   }
-  if (!project.suppliers?.length) {
-    return res.status(400).json({ error: "No suppliers available to simulate replies" });
-  }
 
-  const simulated = simulateSupplierReplies({
-    project,
-    supplierIds: req.body?.supplierIds || [],
-  });
-
-  const replyRecords = [];
-  for (const item of simulated) {
-    const supplier = project.suppliers.find((candidate) => candidate.id === item.supplierId);
-    if (!supplier) continue;
-
-    const parsed = await parseSupplierReply({
+  try {
+    const matched = await loadProjectRepliesFromInbox({
       project,
-      supplier,
-      replyText: item.replyText,
-    });
-    const intervention = resolveIntervention(parsed, item.replyText);
-    const conversation = createConversationModel({
-      projectId,
-      supplierId: item.supplierId,
-      direction: "inbound",
-      channel: "email",
-      subject: item.subject,
-      message: item.replyText,
-      parsed,
+      since: project.lastReplySyncAt || project.createdAt,
     });
 
-    replyRecords.push({
-      supplierId: item.supplierId,
-      parsed,
-      intervention,
-      conversation,
+    if (!matched.length) {
+      const updated = await patchProject(projectId, {
+        lastReplySyncAt: new Date().toISOString(),
+      });
+      return res.json({
+        project: updated,
+        syncedCount: 0,
+      });
+    }
+
+    const replyRecords = [];
+    for (const item of matched) {
+      const parsed = await parseSupplierReply({
+        project,
+        supplier: item.supplier,
+        replyText: item.message.text,
+      });
+      const intervention = resolveIntervention(parsed, item.message.text);
+      const conversation = createConversationModel({
+        projectId,
+        supplierId: item.supplier.id,
+        direction: "inbound",
+        channel: "email",
+        subject: item.message.subject || "Supplier Response",
+        message: item.message.text,
+        parsed,
+        metadata: {
+          source: "imap_sync",
+          inboundMessageId: item.message.messageId || undefined,
+          imapUid: item.message.uid,
+          from: item.message.from,
+          date: item.message.date,
+        },
+      });
+
+      replyRecords.push({
+        supplierId: item.supplier.id,
+        parsed,
+        intervention,
+        conversation,
+      });
+    }
+
+    const updated = await applyParsedReplies({
+      projectId,
+      replyRecords,
+    });
+
+    return res.json({
+      project: updated,
+      syncedCount: replyRecords.length,
+    });
+  } catch (error) {
+    return res.status(503).json({
+      error: "Failed to sync inbox replies",
+      message: error instanceof Error ? error.message : "Unknown error",
     });
   }
-
-  const updated = await applyParsedReplies({ projectId, replyRecords });
-
-  return res.json({
-    project: updated,
-    simulatedReplies: replyRecords.length,
-  });
 }

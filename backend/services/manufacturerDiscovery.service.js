@@ -4,7 +4,7 @@ import { computeSupplierConfidence } from "../lib/scoring/supplierScore.js";
 import { searchWeb } from "../lib/discovery/webSearch.js";
 import { enrichSearchResultToSupplier } from "../lib/discovery/contactExtraction.js";
 
-function buildDiscoveryQuery(project) {
+function buildDiscoveryQueries(project) {
   const definition = project?.productDefinition || {};
   const constraints = project?.constraints || {};
 
@@ -15,7 +15,14 @@ function buildDiscoveryQuery(project) {
     : "";
 
   const countryHint = constraints.country || "United States";
-  return `${product} ${category} ${materials} OEM manufacturer RFQ email ${countryHint}`;
+
+  return [
+    `${product} ${category} OEM manufacturer RFQ email ${countryHint}`,
+    `${product} contract manufacturer contact email ${countryHint}`,
+    `${category} factory supplier inquiry email ${countryHint}`,
+    `${materials} ${product} private label manufacturer email ${countryHint}`,
+    `${product} wholesale producer factory website contact`,
+  ];
 }
 
 function uniqueSupplierCandidates(candidates) {
@@ -31,17 +38,29 @@ function uniqueSupplierCandidates(candidates) {
 }
 
 export async function discoverManufacturers({ project }) {
-  const query = buildDiscoveryQuery(project);
-  const searchResults = await searchWeb({ query, maxResults: 16 });
+  const queries = buildDiscoveryQueries(project);
+  let searchResults = [];
 
-  if (!searchResults.length) {
+  for (const query of queries) {
+    const batch = await searchWeb({ query, maxResults: 10 }).catch(() => []);
+    if (batch.length) {
+      searchResults = [...searchResults, ...batch];
+    }
+    if (searchResults.length >= 20) break;
+  }
+
+  const dedupedResults = Array.from(
+    new Map(searchResults.map((item) => [item.url, item])).values(),
+  ).slice(0, 20);
+
+  if (!dedupedResults.length) {
     throw new Error(
       "No web search results found for supplier discovery. Configure SERPER_API_KEY for stronger discovery or refine product details.",
     );
   }
 
   const enriched = [];
-  for (const result of searchResults) {
+  for (const result of dedupedResults) {
     const supplier = await enrichSearchResultToSupplier(result, {
       targetCountry: project?.constraints?.country || "United States",
     }).catch(() => null);

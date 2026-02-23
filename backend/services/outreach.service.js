@@ -1,6 +1,7 @@
 import { createConversationModel } from "../models/Conversation.js";
 import { buildRfqBody } from "../lib/email/rfqTemplate.js";
 import { generateTextWithFallback } from "./llm.service.js";
+import { isSmtpConfigured, sendEmail } from "../lib/email/smtpClient.js";
 
 async function buildSingleDraft({ project, supplier }) {
   const system =
@@ -23,6 +24,7 @@ async function buildSingleDraft({ project, supplier }) {
   return {
     supplierId: supplier.id,
     supplierName: supplier.name,
+    supplierEmail: supplier.email || "",
     subject: `RFQ Request: ${project.productDefinition?.productName || project.name}`,
     body,
     status: "draft",
@@ -43,15 +45,65 @@ export async function createOutreachDrafts({ project, supplierIds = [] }) {
   return drafts;
 }
 
-export function sendOutreachDrafts({ projectId, drafts }) {
-  return drafts.map((draft) =>
-    createConversationModel({
-      projectId,
-      supplierId: draft.supplierId,
-      direction: "outbound",
-      channel: "email",
-      subject: draft.subject,
-      message: draft.body,
-    }),
-  );
+export async function sendOutreachDrafts({ projectId, drafts, suppliers }) {
+  if (!isSmtpConfigured()) {
+    throw new Error(
+      "SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM before sending outreach.",
+    );
+  }
+
+  const supplierMap = new Map((suppliers || []).map((supplier) => [supplier.id, supplier]));
+  const sentConversations = [];
+  const failures = [];
+
+  for (const draft of drafts) {
+    const supplier = supplierMap.get(draft.supplierId);
+    const toEmail = draft.supplierEmail || supplier?.email || "";
+
+    if (!toEmail) {
+      failures.push({
+        supplierId: draft.supplierId,
+        reason: "Missing supplier email",
+      });
+      continue;
+    }
+
+    try {
+      const result = await sendEmail({
+        to: toEmail,
+        subject: draft.subject,
+        text: draft.body,
+      });
+
+      sentConversations.push(
+        createConversationModel({
+          projectId,
+          supplierId: draft.supplierId,
+          direction: "outbound",
+          channel: "email",
+          subject: draft.subject,
+          message: draft.body,
+          parsed: null,
+          metadata: {
+            to: toEmail,
+            provider: "smtp",
+            providerMessageId: result.messageId,
+            accepted: result.accepted,
+            rejected: result.rejected,
+            status: "sent",
+          },
+        }),
+      );
+    } catch (error) {
+      failures.push({
+        supplierId: draft.supplierId,
+        reason: error instanceof Error ? error.message : "Send failed",
+      });
+    }
+  }
+
+  return {
+    sentConversations,
+    failures,
+  };
 }

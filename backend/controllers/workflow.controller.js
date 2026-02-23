@@ -1,17 +1,34 @@
 import { runOutreachAgent } from "../agents/outreach.agent.js";
 import { runNegotiationAgent } from "../agents/negotiation.agent.js";
-import { classifyHumanIntervention } from "../agents/classifier.agent.js";
 import { createConversationModel } from "../models/Conversation.js";
 import { discoverManufacturers } from "../services/manufacturerDiscovery.service.js";
 import { sendOutreachDrafts } from "../services/outreach.service.js";
-import { parseSupplierReply } from "../services/responseIntelligence.service.js";
-import {
-  pickBestSupplier,
-  simulateSupplierReplies,
-} from "../services/supplierSimulation.service.js";
 import { CHECKLIST_KEYS } from "../services/checklist.service.js";
 import { setChecklistItem, setModuleStatus } from "../services/projectState.service.js";
 import { getProjectById, patchProject } from "../store/project.store.js";
+
+function pickBestSupplierFromResponses(suppliers = []) {
+  const responded = suppliers.filter((supplier) => supplier.status === "responded");
+  if (!responded.length) return null;
+
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (const supplier of responded) {
+    const price = Number.isFinite(supplier?.pricing?.unitPrice) ? supplier.pricing.unitPrice : 999;
+    const moq = Number.isFinite(supplier?.moq) ? supplier.moq : 99999;
+    const lead = Number.isFinite(supplier?.leadTimeDays) ? supplier.leadTimeDays : 999;
+    const confidence = Number.isFinite(supplier?.confidenceScore) ? supplier.confidenceScore : 0;
+
+    const score = (1 / Math.max(1, price)) * 40 + (1 / Math.max(1, moq)) * 3200 + (1 / Math.max(1, lead)) * 36 + confidence * 12;
+    if (score > bestScore) {
+      bestScore = score;
+      best = supplier;
+    }
+  }
+
+  return best;
+}
 
 function buildNegotiationTarget(supplier) {
   const unitPrice = Number.isFinite(supplier?.pricing?.unitPrice)
@@ -24,73 +41,7 @@ function buildNegotiationTarget(supplier) {
     ? Math.max(10, Math.round(supplier.leadTimeDays * 0.85))
     : undefined;
 
-  return {
-    unitPrice,
-    moq,
-    leadTimeDays,
-  };
-}
-
-function resolveIntervention(parsed, replyText) {
-  return classifyHumanIntervention({
-    confidence: parsed.confidence,
-    uncertainties: parsed.uncertainties,
-    legalRisk: parsed.uncertainties.some((value) => /legal|compliance/i.test(value)),
-    nonStandardTerms: /exclusive|non-cancelable|advance payment/i.test(replyText),
-  });
-}
-
-async function applyReplyRecords({ projectId, replyRecords }) {
-  if (!replyRecords.length) return getProjectById(projectId);
-
-  const anyRequiresHuman = replyRecords.some((record) => record.intervention.requiresHuman);
-
-  return patchProject(projectId, (draft) => {
-    for (const record of replyRecords) {
-      draft.conversations.unshift(record.conversation);
-    }
-
-    draft.suppliers = draft.suppliers.map((supplier) => {
-      const hit = replyRecords.find((record) => record.supplierId === supplier.id);
-      if (!hit) return supplier;
-
-      return {
-        ...supplier,
-        pricing: {
-          unitPrice: hit.parsed.unitPrice,
-          currency: hit.parsed.currency || "USD",
-        },
-        moq: hit.parsed.moq,
-        leadTimeDays: hit.parsed.leadTimeDays,
-        toolingCost: hit.parsed.toolingCost,
-        confidenceScore: hit.parsed.confidence,
-        riskFlags: hit.parsed.uncertainties,
-        status: "responded",
-        updatedAt: new Date().toISOString(),
-      };
-    });
-
-    setChecklistItem(
-      draft,
-      CHECKLIST_KEYS.RESPONSE_ANALYSIS,
-      anyRequiresHuman ? "in_progress" : "validated",
-      anyRequiresHuman ? "Some replies require human review." : `Parsed ${replyRecords.length} replies.`,
-      anyRequiresHuman ? "Review flagged constraints before negotiation." : "",
-    );
-    setModuleStatus(draft, "responses", anyRequiresHuman ? "in_progress" : "validated");
-
-    if (!anyRequiresHuman) {
-      setModuleStatus(draft, "negotiation", "in_progress");
-      setChecklistItem(
-        draft,
-        CHECKLIST_KEYS.NEGOTIATION,
-        "in_progress",
-        "Negotiation can begin with top supplier candidates.",
-      );
-    }
-
-    return draft;
-  });
+  return { unitPrice, moq, leadTimeDays };
 }
 
 export async function runAutopilotHandler(req, res) {
@@ -98,7 +49,8 @@ export async function runAutopilotHandler(req, res) {
   const {
     forceDiscover = false,
     forceOutreach = false,
-    forceReplySimulation = false,
+    sendEmails = true,
+    runNegotiation = true,
   } = req.body || {};
 
   let project = await getProjectById(projectId);
@@ -117,7 +69,7 @@ export async function runAutopilotHandler(req, res) {
         draft,
         CHECKLIST_KEYS.SUPPLIER_DISCOVERY,
         "validated",
-        `Autopilot discovered ${suppliers.length} suppliers.`,
+        `Discovered ${suppliers.length} suppliers from live web search.`,
       );
       return draft;
     });
@@ -138,132 +90,139 @@ export async function runAutopilotHandler(req, res) {
         draft,
         CHECKLIST_KEYS.OUTREACH_RFQ,
         "in_progress",
-        `Autopilot prepared ${drafts.length} outreach drafts.`,
+        `Prepared ${drafts.length} outreach drafts.`,
       );
       return draft;
     });
     summary.push(`prepared_${drafts.length}_drafts`);
   }
 
-  const unsentDrafts = project.outreachDrafts.filter((entry) => entry.status !== "sent");
-  if (unsentDrafts.length) {
-    const messages = sendOutreachDrafts({
-      projectId,
-      drafts: unsentDrafts,
-    });
+  if (sendEmails) {
+    const unsentDrafts = project.outreachDrafts.filter((entry) => entry.status !== "sent");
+    if (unsentDrafts.length) {
+      try {
+        const { sentConversations, failures } = await sendOutreachDrafts({
+          projectId,
+          drafts: unsentDrafts,
+          suppliers: project.suppliers,
+        });
 
-    project = await patchProject(projectId, (draft) => {
-      draft.conversations = [...messages, ...draft.conversations];
-      draft.outreachDrafts = draft.outreachDrafts.map((entry) => ({
-        ...entry,
-        status: "sent",
-        sentAt: new Date().toISOString(),
-      }));
-      draft.suppliers = draft.suppliers.map((supplier) => ({
-        ...supplier,
-        status: draft.outreachDrafts.some((entry) => entry.supplierId === supplier.id)
-          ? "contacted"
-          : supplier.status,
-        updatedAt: new Date().toISOString(),
-      }));
+        project = await patchProject(projectId, (draft) => {
+          draft.conversations = [...sentConversations, ...draft.conversations];
+          draft.outreachDrafts = draft.outreachDrafts.map((entry) => {
+            const failed = failures.find((item) => item.supplierId === entry.supplierId);
+            return {
+              ...entry,
+              status: failed ? "failed" : "sent",
+              sentAt: failed ? entry.sentAt : new Date().toISOString(),
+              error: failed ? failed.reason : undefined,
+            };
+          });
 
-      setModuleStatus(draft, "outreach", "validated");
-      setChecklistItem(
-        draft,
-        CHECKLIST_KEYS.OUTREACH_RFQ,
-        "validated",
-        `Autopilot sent ${messages.length} RFQs.`,
-      );
-      setModuleStatus(draft, "responses", "in_progress");
-      return draft;
-    });
-    summary.push(`sent_${messages.length}_rfqs`);
-  }
+          draft.suppliers = draft.suppliers.map((supplier) => {
+            const failed = failures.some((item) => item.supplierId === supplier.id);
+            const sent = sentConversations.some((conv) => conv.supplierId === supplier.id);
+            return {
+              ...supplier,
+              status: sent ? "contacted" : failed ? "outreach_failed" : supplier.status,
+              updatedAt: new Date().toISOString(),
+            };
+          });
 
-  if (forceReplySimulation || project.suppliers.some((supplier) => supplier.status === "contacted")) {
-    const simulatedReplies = simulateSupplierReplies({
-      project,
-      supplierIds: project.suppliers.map((supplier) => supplier.id),
-    });
+          if (sentConversations.length > 0) {
+            setModuleStatus(draft, "outreach", "validated");
+            setChecklistItem(
+              draft,
+              CHECKLIST_KEYS.OUTREACH_RFQ,
+              "validated",
+              `Sent ${sentConversations.length} RFQs.`,
+            );
+            setModuleStatus(draft, "responses", "in_progress");
+          } else {
+            setModuleStatus(draft, "outreach", "blocked");
+            setChecklistItem(
+              draft,
+              CHECKLIST_KEYS.OUTREACH_RFQ,
+              "blocked",
+              "Autopilot could not send any outreach messages.",
+              "Configure SMTP and retry outreach.",
+            );
+          }
 
-    const replyRecords = [];
-    for (const item of simulatedReplies) {
-      const supplier = project.suppliers.find((candidate) => candidate.id === item.supplierId);
-      if (!supplier) continue;
+          return draft;
+        });
 
-      const parsed = await parseSupplierReply({
-        project,
-        supplier,
-        replyText: item.replyText,
-      });
-      const intervention = resolveIntervention(parsed, item.replyText);
-      const conversation = createConversationModel({
-        projectId,
-        supplierId: item.supplierId,
-        direction: "inbound",
-        channel: "email",
-        subject: item.subject,
-        message: item.replyText,
-        parsed,
-      });
-
-      replyRecords.push({
-        supplierId: item.supplierId,
-        parsed,
-        intervention,
-        conversation,
-      });
+        summary.push(`sent_${sentConversations.length}_emails`);
+        if (failures.length) summary.push(`failed_${failures.length}_emails`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown send error";
+        project = await patchProject(projectId, (draft) => {
+          setModuleStatus(draft, "outreach", "blocked");
+          setChecklistItem(
+            draft,
+            CHECKLIST_KEYS.OUTREACH_RFQ,
+            "blocked",
+            `Autopilot outreach failed: ${message}`,
+            "Configure SMTP credentials and retry sending.",
+          );
+          return draft;
+        });
+        summary.push("outreach_send_failed");
+      }
     }
-
-    project = await applyReplyRecords({ projectId, replyRecords });
-    summary.push(`simulated_${replyRecords.length}_replies`);
   }
 
-  const bestSupplier = pickBestSupplier(project.suppliers || []);
-  if (bestSupplier) {
-    const target = buildNegotiationTarget(bestSupplier);
-    const draft = await runNegotiationAgent({
-      project,
-      supplier: bestSupplier,
-      target,
-    });
-    const message = createConversationModel({
-      projectId,
-      supplierId: bestSupplier.id,
-      direction: "outbound",
-      channel: "email",
-      subject: draft.subject,
-      message: draft.body,
-    });
+  if (runNegotiation) {
+    const bestSupplier = pickBestSupplierFromResponses(project.suppliers || []);
+    if (bestSupplier) {
+      const target = buildNegotiationTarget(bestSupplier);
+      const draft = await runNegotiationAgent({
+        project,
+        supplier: bestSupplier,
+        target,
+      });
 
-    project = await patchProject(projectId, (editable) => {
-      editable.conversations.unshift(message);
-      editable.suppliers = editable.suppliers.map((supplier) => ({
-        ...supplier,
-        selected: supplier.id === bestSupplier.id,
-        updatedAt: new Date().toISOString(),
-      }));
+      const message = createConversationModel({
+        projectId,
+        supplierId: bestSupplier.id,
+        direction: "outbound",
+        channel: "email",
+        subject: draft.subject,
+        message: draft.body,
+        metadata: {
+          source: "autopilot_negotiation_draft",
+        },
+      });
 
-      setModuleStatus(editable, "negotiation", "validated");
-      setChecklistItem(
-        editable,
-        CHECKLIST_KEYS.NEGOTIATION,
-        "validated",
-        `Autopilot generated negotiation for ${bestSupplier.name}.`,
-      );
+      project = await patchProject(projectId, (editable) => {
+        editable.conversations.unshift(message);
+        editable.suppliers = editable.suppliers.map((supplier) => ({
+          ...supplier,
+          selected: supplier.id === bestSupplier.id,
+          updatedAt: new Date().toISOString(),
+        }));
 
-      setModuleStatus(editable, "success", "in_progress");
-      setChecklistItem(
-        editable,
-        CHECKLIST_KEYS.MANUFACTURER_SELECTION,
-        "in_progress",
-        `${bestSupplier.name} is current front-runner. Finalize to complete workflow.`,
-      );
+        setModuleStatus(editable, "negotiation", "validated");
+        setChecklistItem(
+          editable,
+          CHECKLIST_KEYS.NEGOTIATION,
+          "validated",
+          `Generated negotiation draft for ${bestSupplier.name}.`,
+        );
 
-      return editable;
-    });
+        setModuleStatus(editable, "success", "in_progress");
+        setChecklistItem(
+          editable,
+          CHECKLIST_KEYS.MANUFACTURER_SELECTION,
+          "in_progress",
+          `${bestSupplier.name} is current front-runner. Finalize to complete workflow.`,
+        );
 
-    summary.push(`negotiated_with_${bestSupplier.id}`);
+        return editable;
+      });
+
+      summary.push(`prepared_negotiation_${bestSupplier.id}`);
+    }
   }
 
   return res.json({

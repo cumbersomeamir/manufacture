@@ -1,12 +1,13 @@
 import { runNegotiationAgent } from "../agents/negotiation.agent.js";
 import { createConversationModel } from "../models/Conversation.js";
+import { sendEmail } from "../lib/email/smtpClient.js";
 import { getProjectById, patchProject } from "../store/project.store.js";
 import { setChecklistItem, setModuleStatus } from "../services/projectState.service.js";
 import { CHECKLIST_KEYS } from "../services/checklist.service.js";
 
 export async function generateNegotiationHandler(req, res) {
   const { projectId } = req.params;
-  const { supplierId, target = {} } = req.body || {};
+  const { supplierId, target = {}, sendEmail: shouldSendEmail = true } = req.body || {};
 
   const project = await getProjectById(projectId);
   if (!project) {
@@ -28,6 +29,33 @@ export async function generateNegotiationHandler(req, res) {
       target,
     });
 
+    let delivery = {
+      status: "draft_only",
+      providerMessageId: null,
+      error: null,
+    };
+
+    if (shouldSendEmail && supplier.email) {
+      try {
+        const sent = await sendEmail({
+          to: supplier.email,
+          subject: draft.subject,
+          text: draft.body,
+        });
+        delivery = {
+          status: "sent",
+          providerMessageId: sent.messageId,
+          error: null,
+        };
+      } catch (error) {
+        delivery = {
+          status: "failed",
+          providerMessageId: null,
+          error: error instanceof Error ? error.message : "Unknown email error",
+        };
+      }
+    }
+
     const message = createConversationModel({
       projectId,
       supplierId: supplier.id,
@@ -35,6 +63,13 @@ export async function generateNegotiationHandler(req, res) {
       channel: "email",
       subject: draft.subject,
       message: draft.body,
+      metadata: {
+        source: "negotiation",
+        to: supplier.email || "",
+        status: delivery.status,
+        providerMessageId: delivery.providerMessageId,
+        error: delivery.error,
+      },
     });
 
     const updated = await patchProject(projectId, (editable) => {
@@ -61,6 +96,7 @@ export async function generateNegotiationHandler(req, res) {
     return res.json({
       draft,
       supplier,
+      delivery,
       project: updated,
     });
   } catch (error) {

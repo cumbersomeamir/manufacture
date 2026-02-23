@@ -1,16 +1,20 @@
-import { GoogleGenAI } from "@google/genai";
 import { CHAT_CONSTANTS } from "../constants/chat.js";
 import { loadHistory, loadSummary, saveHistory, saveSummary } from "./memory.js";
+import { generateText, isLlmConfigured } from "./llm.service.js";
 
 function clip(text, maxChars) {
   if (!text) return "";
   return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
-function safeTextFromResp(resp) {
-  if (typeof resp?.text === "string" && resp.text.trim()) return resp.text.trim();
-  const parts = resp?.candidates?.[0]?.content?.parts ?? [];
-  return parts.map((part) => part.text ?? "").join("").trim();
+function textFromHistoryEntry(entry) {
+  return String(
+    (entry?.parts || [])
+      .map((part) => part?.text || "")
+      .join(" "),
+  )
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function trimHistory(history) {
@@ -18,7 +22,7 @@ function trimHistory(history) {
   return history.slice(-CHAT_CONSTANTS.MAX_MESSAGES);
 }
 
-async function maybeSummarize({ ai, sessionId, history }) {
+async function maybeSummarize({ sessionId, history }) {
   if (history.length <= CHAT_CONSTANTS.MAX_MESSAGES) {
     return { history, summary: await loadSummary(sessionId) };
   }
@@ -28,28 +32,33 @@ async function maybeSummarize({ ai, sessionId, history }) {
   const toSummarize = history.slice(0, overflowCount);
   const keep = history.slice(overflowCount);
 
-  const summaryPrompt = [
-    "Summarize this conversation history into stable facts, preferences, constraints, decisions, and open tasks.",
-    "Keep it concise and actionable.",
-    JSON.stringify(toSummarize),
-  ].join("\n\n");
+  const transcript = toSummarize
+    .map((item) => `${String(item.role || "user").toUpperCase()}: ${textFromHistoryEntry(item)}`)
+    .join("\n");
 
-  const contents = [];
-  if (existingSummary) {
-    contents.push({ role: "user", parts: [{ text: `Existing summary:\n${existingSummary}` }] });
-  }
-  contents.push({ role: "user", parts: [{ text: summaryPrompt }] });
-
-  const resp = await ai.models.generateContent({
-    model: CHAT_CONSTANTS.MODEL,
-    contents,
-    config: {
+  let newSummary = "";
+  try {
+    newSummary = await generateText({
+      system: "You maintain concise conversation memory.",
+      prompt: [
+        "Summarize this conversation into durable facts, preferences, constraints, decisions, and open tasks.",
+        "Keep it concise and actionable.",
+        existingSummary ? `Existing summary:\n${existingSummary}` : "",
+        `Recent turns:\n${transcript}`,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       temperature: CHAT_CONSTANTS.SUMMARY_TEMPERATURE,
       maxOutputTokens: CHAT_CONSTANTS.SUMMARY_MAX_TOKENS,
-    },
-  });
+    });
+  } catch {
+    const fallbackLines = toSummarize
+      .filter((item) => textFromHistoryEntry(item))
+      .slice(-8)
+      .map((item) => `${String(item.role || "user").toUpperCase()}: ${textFromHistoryEntry(item)}`);
+    newSummary = fallbackLines.join(" | ");
+  }
 
-  const newSummary = safeTextFromResp(resp);
   const merged = existingSummary ? `${existingSummary}\n${newSummary}` : newSummary;
   await saveSummary(sessionId, merged);
 
@@ -60,12 +69,11 @@ export async function generateChatWithMemory({
   sessionId,
   message,
   system = "",
-  apiKey = process.env.GEMINI_API_KEY,
+  apiKey,
 }) {
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY not configured");
+  if (!isLlmConfigured() && !apiKey) {
+    throw new Error("No LLM configured for memory chat. Set GEMINI_API_KEY or NVIDIA_API_KEY.");
   }
-  const ai = new GoogleGenAI({ apiKey });
 
   let history = await loadHistory(sessionId);
   history.push({
@@ -75,35 +83,33 @@ export async function generateChatWithMemory({
   history = trimHistory(history);
 
   const { history: compressedHistory, summary } = await maybeSummarize({
-    ai,
     sessionId,
     history,
   });
 
-  const contents = [];
-  if (system?.trim()) {
-    contents.push({ role: "user", parts: [{ text: `Instruction:\n${clip(system, 1000)}` }] });
-  }
-  if (summary?.trim()) {
-    contents.push({ role: "user", parts: [{ text: `Conversation summary:\n${summary}` }] });
-  }
-  contents.push(...compressedHistory);
+  const transcript = compressedHistory
+    .map((item) => `${String(item.role || "user").toUpperCase()}: ${textFromHistoryEntry(item)}`)
+    .join("\n");
 
-  const resp = await ai.models.generateContent({
-    model: CHAT_CONSTANTS.MODEL,
-    contents,
-    config: {
-      temperature: CHAT_CONSTANTS.TEMPERATURE,
-      maxOutputTokens: CHAT_CONSTANTS.MAX_OUTPUT_TOKENS,
-    },
+  const text = await generateText({
+    apiKey,
+    system,
+    prompt: [
+      "Continue this conversation. Reply to the latest USER turn.",
+      summary ? `Memory summary:\n${summary}` : "",
+      `Recent turns:\n${transcript}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    temperature: CHAT_CONSTANTS.TEMPERATURE,
+    maxOutputTokens: CHAT_CONSTANTS.MAX_OUTPUT_TOKENS,
   });
 
-  const text = safeTextFromResp(resp);
   compressedHistory.push({ role: "model", parts: [{ text: clip(text, 4000) }] });
   await saveHistory(sessionId, trimHistory(compressedHistory));
 
   return {
     text,
-    usage: resp?.usageMetadata,
+    usage: null,
   };
 }

@@ -2,6 +2,8 @@ import { discoverManufacturers } from "../services/manufacturerDiscovery.service
 import { getProjectById, patchProject } from "../store/project.store.js";
 import { setChecklistItem, setModuleStatus } from "../services/projectState.service.js";
 import { CHECKLIST_KEYS } from "../services/checklist.service.js";
+import { createSupplierModel } from "../models/Supplier.js";
+import { computeSupplierConfidence } from "../lib/scoring/supplierScore.js";
 
 export async function discoverSuppliersHandler(req, res) {
   const { projectId } = req.params;
@@ -62,4 +64,65 @@ export async function selectSupplierHandler(req, res) {
   });
 
   return res.json(updated);
+}
+
+export async function addSupplierHandler(req, res) {
+  const { projectId } = req.params;
+  const project = await getProjectById(projectId);
+  if (!project) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  const {
+    name,
+    email,
+    location = "",
+    country = "",
+    website = "",
+    contactPerson = "",
+    exportCapability = "Unknown",
+    distanceComplexity = "Unknown",
+    importFeasibility = "Unknown",
+    reasons = [],
+  } = req.body || {};
+
+  if (!name || !email) {
+    return res.status(400).json({ error: "name and email are required" });
+  }
+
+  const supplier = createSupplierModel({
+    name,
+    email,
+    location,
+    country,
+    website,
+    contactPerson,
+    exportCapability,
+    distanceComplexity,
+    importFeasibility,
+    reasons: Array.isArray(reasons) ? reasons : [String(reasons)],
+    status: "identified",
+  });
+  supplier.confidenceScore = computeSupplierConfidence(supplier);
+
+  const updated = await patchProject(projectId, (draft) => {
+    const exists = draft.suppliers.some(
+      (entry) => String(entry.email || "").toLowerCase() === String(email).toLowerCase(),
+    );
+    if (!exists) {
+      draft.suppliers.unshift(supplier);
+    }
+
+    setChecklistItem(
+      draft,
+      CHECKLIST_KEYS.SUPPLIER_DISCOVERY,
+      "in_progress",
+      "Manual supplier added.",
+      "Add more suppliers or run live discovery.",
+    );
+    setModuleStatus(draft, "discovery", "in_progress");
+    return draft;
+  });
+
+  return res.status(201).json(updated);
 }

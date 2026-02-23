@@ -2,12 +2,13 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 
 function getImapConfig() {
+  const normalizedPass = String(process.env.IMAP_PASS || "").replace(/\s+/g, "");
   return {
     host: process.env.IMAP_HOST || "",
     port: Number(process.env.IMAP_PORT || 0),
     secure: String(process.env.IMAP_SECURE || "true").toLowerCase() === "true",
     user: process.env.IMAP_USER || "",
-    pass: process.env.IMAP_PASS || "",
+    pass: normalizedPass,
     mailbox: process.env.IMAP_MAILBOX || "INBOX",
   };
 }
@@ -44,19 +45,51 @@ export async function fetchInboxMessages({ since, limit = 200 }) {
     logger: false,
   });
 
-  await client.connect();
+  function describeImapError(error, fallback = "Unknown IMAP error") {
+    if (!(error instanceof Error)) return fallback;
+    const parts = [error.message];
+    if (error.responseStatus) parts.push(String(error.responseStatus));
+    if (error.responseText) parts.push(String(error.responseText));
+    if (error.response) parts.push(String(error.response));
+    return parts
+      .filter(Boolean)
+      .join(" | ")
+      .trim();
+  }
 
   try {
-    await client.mailboxOpen(cfg.mailbox);
+    await client.connect();
+  } catch (error) {
+    const message = describeImapError(error, "Unknown IMAP connect error");
+    throw new Error(`IMAP connect failed: ${message}`);
+  }
 
-    const criteria = ["ALL"];
-    const sinceDate = asDate(since);
-    if (sinceDate) {
-      criteria.push(["SINCE", sinceDate]);
+  try {
+    try {
+      await client.mailboxOpen(cfg.mailbox);
+    } catch (error) {
+      const message = describeImapError(error, "Unknown mailbox error");
+      throw new Error(`IMAP mailbox open failed: ${message}`);
     }
 
-    const uids = await client.search(criteria);
-    const recent = uids.slice(-Math.max(1, limit));
+    const query = { all: true };
+    const sinceDate = asDate(since);
+    if (sinceDate) {
+      query.since = sinceDate;
+    }
+
+    const uids = await client.search(query, { uid: true });
+    const uidList = Array.isArray(uids)
+      ? uids
+      : uids && typeof uids[Symbol.iterator] === "function"
+        ? Array.from(uids)
+        : [];
+
+    if (!uidList.length) {
+      return [];
+    }
+
+    const recent = uidList.slice(-Math.max(1, limit));
 
     const messages = [];
     for await (const message of client.fetch(recent, {

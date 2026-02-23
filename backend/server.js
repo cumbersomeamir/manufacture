@@ -11,6 +11,7 @@ import {
   listProjectsHandler,
 } from "./controllers/project.controller.js";
 import {
+  addSupplierHandler,
   discoverSuppliersHandler,
   selectSupplierHandler,
 } from "./controllers/supplier.controller.js";
@@ -18,7 +19,7 @@ import {
   ingestReplyHandler,
   prepareOutreachHandler,
   sendOutreachHandler,
-  simulateRepliesHandler,
+  syncRepliesHandler,
 } from "./controllers/outreach.controller.js";
 import { generateNegotiationHandler } from "./controllers/negotiation.controller.js";
 import {
@@ -26,6 +27,9 @@ import {
   runAutopilotHandler,
 } from "./controllers/workflow.controller.js";
 import { closeMongoConnection, pingMongo } from "./lib/db/mongodb.js";
+import { isImapConfigured } from "./lib/email/imapClient.js";
+import { isSmtpConfigured } from "./lib/email/smtpClient.js";
+import { getConfiguredLlmProvider, isLlmConfigured } from "./services/llm.service.js";
 import { getStorageMode } from "./store/project.store.js";
 
 export function createApp() {
@@ -42,6 +46,14 @@ export function createApp() {
       service: "manufacture-backend",
       storage,
       mongoConnected,
+      integrations: {
+        smtpConfigured: isSmtpConfigured(),
+        imapConfigured: isImapConfigured(),
+        serperConfigured: Boolean(process.env.SERPER_API_KEY),
+        llmConfigured: isLlmConfigured(),
+        llmProvider: getConfiguredLlmProvider(),
+        imageConfigured: Boolean(process.env.GEMINI_API_KEY),
+      },
     });
   });
 
@@ -52,11 +64,12 @@ export function createApp() {
   app.post("/api/projects/:projectId/generate-image", generateProjectImageHandler);
 
   app.post("/api/projects/:projectId/suppliers/discover", discoverSuppliersHandler);
+  app.post("/api/projects/:projectId/suppliers", addSupplierHandler);
   app.patch("/api/projects/:projectId/suppliers/:supplierId/select", selectSupplierHandler);
 
   app.post("/api/projects/:projectId/outreach/prepare", prepareOutreachHandler);
   app.post("/api/projects/:projectId/outreach/send", sendOutreachHandler);
-  app.post("/api/projects/:projectId/outreach/simulate-replies", simulateRepliesHandler);
+  app.post("/api/projects/:projectId/replies/sync", syncRepliesHandler);
   app.post("/api/projects/:projectId/replies/ingest", ingestReplyHandler);
 
   app.post("/api/projects/:projectId/negotiate", generateNegotiationHandler);

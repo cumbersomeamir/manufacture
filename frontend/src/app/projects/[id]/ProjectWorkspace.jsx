@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
+  addSupplier,
   discoverSuppliers,
   finalizeSupplier,
   generateConceptImage,
@@ -13,7 +14,7 @@ import {
   runAutopilot,
   selectSupplier,
   sendOutreach,
-  simulateReplies,
+  syncReplies,
 } from "@/store/project.store";
 import { ModuleStatusRail } from "@/components/status/ModuleStatusRail";
 import { ChecklistBoard } from "@/components/checklist/ChecklistBoard";
@@ -40,6 +41,12 @@ export function ProjectWorkspace({ projectId }) {
     leadTimeDays: "",
   });
   const [imagePrompt, setImagePrompt] = useState("");
+  const [manualSupplier, setManualSupplier] = useState({
+    name: "",
+    email: "",
+    website: "",
+    country: "",
+  });
 
   async function reloadProject() {
     const data = await getProject(projectId);
@@ -112,8 +119,8 @@ export function ProjectWorkspace({ projectId }) {
     await runAction(() => sendOutreach(projectId));
   }
 
-  async function handleSimulateReplies() {
-    await runAction(() => simulateReplies(projectId));
+  async function handleSyncReplies() {
+    await runAction(() => syncReplies(projectId));
   }
 
   async function handleIngestReply(event) {
@@ -172,6 +179,31 @@ export function ProjectWorkspace({ projectId }) {
     await runAction(() => finalizeSupplier(projectId, selectedSupplier.id));
   }
 
+  async function handleAddSupplier(event) {
+    event.preventDefault();
+    if (!manualSupplier.name.trim() || !manualSupplier.email.trim()) {
+      setError("Supplier name and email are required.");
+      return;
+    }
+
+    await runAction(() =>
+      addSupplier(projectId, {
+        name: manualSupplier.name,
+        email: manualSupplier.email,
+        website: manualSupplier.website,
+        country: manualSupplier.country || "Unknown",
+        location: manualSupplier.country || "Unknown",
+      }),
+    );
+
+    setManualSupplier({
+      name: "",
+      email: "",
+      website: "",
+      country: "",
+    });
+  }
+
   if (!project) {
     return <p className="text-sm text-muted">Loading project...</p>;
   }
@@ -211,7 +243,7 @@ export function ProjectWorkspace({ projectId }) {
           <ActionButton onClick={handleDiscover} disabled={busy}>Discover Suppliers</ActionButton>
           <ActionButton onClick={handlePrepare} disabled={busy || project.suppliers.length === 0}>Prepare Outreach</ActionButton>
           <ActionButton onClick={handleSend} disabled={busy || project.outreachDrafts.length === 0}>Send Outreach</ActionButton>
-          <ActionButton onClick={handleSimulateReplies} disabled={busy || project.suppliers.length === 0}>Simulate Replies</ActionButton>
+          <ActionButton onClick={handleSyncReplies} disabled={busy || project.suppliers.length === 0}>Sync Inbox Replies</ActionButton>
           <ActionButton onClick={handleNegotiate} disabled={busy || !selectedSupplier}>Generate Negotiation</ActionButton>
           <ActionButton onClick={handleFinalizeSupplier} disabled={busy || !selectedSupplier}>Finalize Supplier</ActionButton>
           <ActionButton onClick={() => runAction(() => reloadProject())} disabled={busy}>Refresh</ActionButton>
@@ -245,6 +277,39 @@ export function ProjectWorkspace({ projectId }) {
       </section>
 
       <SupplierComparison suppliers={project.suppliers} onSelectSupplier={handleSelectSupplier} />
+
+      <section className="panel">
+        <h2 className="text-lg font-semibold text-ink mb-3">Add Supplier Manually</h2>
+        <form onSubmit={handleAddSupplier} className="grid gap-3 sm:grid-cols-2">
+          <input
+            className="input"
+            value={manualSupplier.name}
+            onChange={(e) => setManualSupplier((prev) => ({ ...prev, name: e.target.value }))}
+            placeholder="Supplier name"
+          />
+          <input
+            className="input"
+            value={manualSupplier.email}
+            onChange={(e) => setManualSupplier((prev) => ({ ...prev, email: e.target.value }))}
+            placeholder="supplier@company.com"
+          />
+          <input
+            className="input"
+            value={manualSupplier.website}
+            onChange={(e) => setManualSupplier((prev) => ({ ...prev, website: e.target.value }))}
+            placeholder="https://company.com"
+          />
+          <input
+            className="input"
+            value={manualSupplier.country}
+            onChange={(e) => setManualSupplier((prev) => ({ ...prev, country: e.target.value }))}
+            placeholder="Country"
+          />
+          <div className="sm:col-span-2 flex justify-end">
+            <button type="submit" className="btn-secondary" disabled={busy}>Add Supplier</button>
+          </div>
+        </form>
+      </section>
 
       <section className="panel">
         <h2 className="text-lg font-semibold text-ink mb-3">Ingest Supplier Reply</h2>

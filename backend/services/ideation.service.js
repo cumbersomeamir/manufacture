@@ -73,6 +73,7 @@ export async function analyzeProductIdea({ idea, constraints = {}, imageContext 
 
   return generateJsonWithFallback({
     prompt,
+    maxOutputTokens: 1200,
     fallback: () => fallbackDefinition({ idea, constraints }),
   });
 }

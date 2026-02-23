@@ -16,6 +16,10 @@ export function discoverSuppliers(projectId) {
   return apiPost(`/api/projects/${projectId}/suppliers/discover`, {});
 }
 
+export function addSupplier(projectId, payload) {
+  return apiPost(`/api/projects/${projectId}/suppliers`, payload);
+}
+
 export function prepareOutreach(projectId, payload = {}) {
   return apiPost(`/api/projects/${projectId}/outreach/prepare`, payload);
 }
@@ -24,8 +28,8 @@ export function sendOutreach(projectId, payload = {}) {
   return apiPost(`/api/projects/${projectId}/outreach/send`, payload);
 }
 
-export function simulateReplies(projectId, payload = {}) {
-  return apiPost(`/api/projects/${projectId}/outreach/simulate-replies`, payload);
+export function syncReplies(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/replies/sync`, payload);
 }
 
 export function ingestSupplierReply(projectId, payload) {

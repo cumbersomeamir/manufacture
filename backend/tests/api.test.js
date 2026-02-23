@@ -4,7 +4,8 @@ import request from "supertest";
 
 import { createApp } from "../server.js";
 import { closeMongoConnection } from "../lib/db/mongodb.js";
-import { clearProjectStore } from "../store/project.store.js";
+import { clearProjectStore, patchProject } from "../store/project.store.js";
+import { createSupplierModel } from "../models/Supplier.js";
 
 const app = createApp();
 
@@ -43,7 +44,7 @@ test("POST /api/projects creates a structured project", async () => {
   assert.equal(response.body.checklist.length, 8);
 });
 
-test("end-to-end supplier workflow works without API keys", async () => {
+test("manual reply ingest and negotiation work with real-mode constraints", async () => {
   const create = await request(app)
     .post("/api/projects")
     .send({
@@ -53,11 +54,20 @@ test("end-to-end supplier workflow works without API keys", async () => {
   assert.equal(create.status, 201);
   const projectId = create.body.id;
 
-  const discovered = await request(app)
-    .post(`/api/projects/${projectId}/suppliers/discover`)
-    .send({});
-  assert.equal(discovered.status, 200);
-  assert.ok(discovered.body.suppliers.length >= 3);
+  const seededSupplier = createSupplierModel({
+    name: "Acme Manufacturing",
+    email: "sales@acme-mfg.com",
+    location: "United States",
+    country: "United States",
+    exportCapability: "High",
+    distanceComplexity: "Low",
+    reasons: ["Seeded for backend integration test"],
+  });
+
+  await patchProject(projectId, (draft) => {
+    draft.suppliers = [seededSupplier];
+    return draft;
+  });
 
   const prepared = await request(app)
     .post(`/api/projects/${projectId}/outreach/prepare`)
@@ -68,10 +78,14 @@ test("end-to-end supplier workflow works without API keys", async () => {
   const sent = await request(app)
     .post(`/api/projects/${projectId}/outreach/send`)
     .send({});
-  assert.equal(sent.status, 200);
-  assert.equal(sent.body.project.moduleStatus.outreach, "validated");
+  assert.ok(sent.status === 200 || sent.status === 503);
+  if (sent.status === 503) {
+    assert.match(String(sent.body.message || sent.body.error), /SMTP/i);
+  } else {
+    assert.ok(sent.body.project);
+  }
 
-  const supplierId = sent.body.project.suppliers[0].id;
+  const supplierId = seededSupplier.id;
   const ingested = await request(app)
     .post(`/api/projects/${projectId}/replies/ingest`)
     .send({
@@ -105,9 +119,30 @@ test("autopilot and finalize complete project status flow", async () => {
 
   const projectId = created.body.id;
 
+  const seededSupplier = createSupplierModel({
+    name: "Pilot Supplier",
+    email: "hello@pilot-supplier.com",
+    location: "United States",
+    country: "United States",
+    exportCapability: "High",
+    distanceComplexity: "Low",
+    status: "responded",
+    pricing: { unitPrice: 11.3, currency: "USD" },
+    moq: 850,
+    leadTimeDays: 24,
+    toolingCost: 1400,
+    confidenceScore: 0.86,
+    reasons: ["Seeded for autopilot integration test"],
+  });
+
+  await patchProject(projectId, (draft) => {
+    draft.suppliers = [seededSupplier];
+    return draft;
+  });
+
   const autopilot = await request(app)
     .post(`/api/projects/${projectId}/autopilot`)
-    .send({});
+    .send({ sendEmails: false, forceDiscover: false, forceOutreach: true });
   assert.equal(autopilot.status, 200);
   assert.ok(Array.isArray(autopilot.body.summary));
   assert.ok(autopilot.body.project.suppliers.length >= 1);

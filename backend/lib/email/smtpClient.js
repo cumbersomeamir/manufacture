@@ -3,12 +3,13 @@ import nodemailer from "nodemailer";
 let transporter = null;
 
 function readSmtpConfig() {
+  const normalizedPass = String(process.env.SMTP_PASS || "").replace(/\s+/g, "");
   return {
     host: process.env.SMTP_HOST || "",
     port: Number(process.env.SMTP_PORT || 0),
     secure: String(process.env.SMTP_SECURE || "false").toLowerCase() === "true",
     user: process.env.SMTP_USER || "",
-    pass: process.env.SMTP_PASS || "",
+    pass: normalizedPass,
     from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
     replyTo: process.env.SMTP_REPLY_TO || process.env.SMTP_USER || "",
   };

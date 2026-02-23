@@ -21,6 +21,11 @@ export function ConversationTimeline({ conversations = [], suppliers = [] }) {
                     <p className="text-xs text-muted font-mono">{new Date(event.createdAt).toLocaleString()}</p>
                   </div>
                   {event.subject ? <p className="text-xs text-muted mt-1">{event.subject}</p> : null}
+                  {event.metadata?.status ? (
+                    <p className="text-xs text-muted mt-1">
+                      delivery: {event.metadata.status}
+                    </p>
+                  ) : null}
                   <p className="text-sm text-subtle mt-2 whitespace-pre-wrap">{event.message}</p>
                   {event.parsed ? (
                     <div className="mt-2 rounded-lg border border-line bg-surface-2 p-2 text-xs text-muted">

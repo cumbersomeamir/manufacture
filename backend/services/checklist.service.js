@@ -73,6 +73,70 @@ function fallbackChecklist() {
   ];
 }
 
+const ALLOWED_MODULES = new Set([
+  "ideation",
+  "checklist",
+  "discovery",
+  "outreach",
+  "responses",
+  "negotiation",
+  "success",
+]);
+
+function asChecklistArray(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+
+  const commonKeys = [
+    "checklist",
+    "items",
+    "steps",
+    "pre-manufacturing-checklist",
+    "preManufacturingChecklist",
+    "manufacturingChecklist",
+    "data",
+  ];
+
+  for (const key of commonKeys) {
+    if (Array.isArray(raw[key])) return raw[key];
+  }
+
+  for (const value of Object.values(raw)) {
+    if (Array.isArray(value)) return value;
+  }
+
+  return [];
+}
+
+function normalizeChecklistItems(raw) {
+  const fallback = fallbackChecklist();
+  const items = asChecklistArray(raw);
+  const merged = [];
+
+  for (let index = 0; index < fallback.length; index += 1) {
+    const base = fallback[index];
+    const candidate = items[index] || {};
+
+    const key = base.key;
+    const title = String(candidate.title || "").trim() || base.title;
+    const description = String(candidate.description || "").trim() || base.description;
+    const module = ALLOWED_MODULES.has(String(candidate.module || "").trim())
+      ? String(candidate.module).trim()
+      : base.module;
+    const dependsOn = base.dependsOn;
+
+    merged.push({
+      key,
+      title,
+      description,
+      module,
+      dependsOn,
+    });
+  }
+
+  return merged;
+}
+
 export async function buildChecklist({ productDefinition, constraints }) {
   const prompt = [
     "Create an ordered pre-manufacturing checklist for this product idea.",
@@ -86,11 +150,11 @@ export async function buildChecklist({ productDefinition, constraints }) {
 
   const items = await generateJsonWithFallback({
     prompt,
+    maxOutputTokens: 1400,
     fallback: () => fallbackChecklist(),
   });
 
-  const normalized = Array.isArray(items) ? items : fallbackChecklist();
-  const safe = normalized.length === 8 ? normalized : fallbackChecklist();
+  const safe = normalizeChecklistItems(items);
 
   return safe.map((item, index) =>
     createChecklistItem({
