@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const HTTP_TIMEOUT_MS = 10000;
+const GENERIC_TITLE_REGEX = /^(contact us|contact|about us|about|contact information|home|our|products|services|inquiry)$/i;
 
 function normalizeWhitespace(value = "") {
   return String(value).replace(/\s+/g, " ").trim();
@@ -54,7 +55,9 @@ function textFromHtml(html = "") {
 
 function deriveNameFromTitle(title = "", hostname = "") {
   const cleanTitle = normalizeWhitespace(title).replace(/\s*[-|].*$/, "").trim();
-  if (cleanTitle) return cleanTitle.slice(0, 120);
+  if (cleanTitle && !GENERIC_TITLE_REGEX.test(cleanTitle)) {
+    return cleanTitle.slice(0, 120);
+  }
 
   if (!hostname) return "Unknown supplier";
   return hostname
@@ -62,6 +65,18 @@ function deriveNameFromTitle(title = "", hostname = "") {
     .split(".")[0]
     .replace(/[-_]+/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function inferMarketplace(url = "") {
+  const host = String(url).toLowerCase();
+  if (host.includes("alibaba.com")) return "alibaba";
+  if (host.includes("indiamart.com")) return "indiamart";
+  if (host.includes("justdial.com")) return "justdial";
+  if (host.includes("tradeindia.com")) return "tradeindia";
+  if (host.includes("globalsources.com")) return "globalsources";
+  if (host.includes("made-in-china.com")) return "made-in-china";
+  if (host.includes("thomasnet.com")) return "thomasnet";
+  return "web";
 }
 
 function inferCountry(text = "", fallback = "") {
@@ -143,6 +158,7 @@ export async function enrichSearchResultToSupplier(result, { targetCountry = "Un
     location: country,
     country,
     website: baseUrl,
+    marketplace: inferMarketplace(result.url),
     sourceUrl: result.url,
     sourceSnippet: result.snippet || "",
     exportCapability: isDomestic ? "Medium" : "High",

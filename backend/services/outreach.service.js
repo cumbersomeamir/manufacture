@@ -2,23 +2,31 @@ import { createConversationModel } from "../models/Conversation.js";
 import { buildRfqBody } from "../lib/email/rfqTemplate.js";
 import { generateTextWithFallback } from "./llm.service.js";
 import { isSmtpConfigured, sendEmail } from "../lib/email/smtpClient.js";
+import { renderStructuredRfqText } from "./rfqContract.service.js";
 
 async function buildSingleDraft({ project, supplier }) {
   const system =
     "You write concise supplier outreach emails with clear RFQ asks. Keep tone professional and direct.";
+  const structuredRfq = project?.outcomeEngine?.structuredRfq || null;
+  const rfqText = structuredRfq ? renderStructuredRfqText(structuredRfq) : "";
   const prompt = [
     "Write an outreach email for this supplier.",
     "Include product summary, material hints, MOQ preference, and ask for price/MOQ/lead time/tooling/terms.",
+    "If structured RFQ terms are provided, include them as fixed requirements.",
     "Output only email body.",
     `Supplier: ${JSON.stringify(supplier)}`,
     `Project: ${JSON.stringify(project.productDefinition)}`,
     `Constraints: ${JSON.stringify(project.constraints)}`,
+    rfqText ? `Structured RFQ:\n${rfqText}` : "",
   ].join("\n\n");
 
   const body = await generateTextWithFallback({
     prompt,
     system,
-    fallback: () => buildRfqBody({ project, supplier }),
+    fallback: () => [
+      buildRfqBody({ project, supplier }),
+      rfqText ? `\n\nStructured RFQ Terms:\n${rfqText}` : "",
+    ].join(""),
   });
 
   return {
@@ -27,6 +35,7 @@ async function buildSingleDraft({ project, supplier }) {
     supplierEmail: supplier.email || "",
     subject: `RFQ Request: ${project.productDefinition?.productName || project.name}`,
     body,
+    structuredRfq: structuredRfq || undefined,
     status: "draft",
     createdAt: new Date().toISOString(),
   };

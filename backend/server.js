@@ -18,6 +18,7 @@ import {
 import {
   ingestReplyHandler,
   prepareOutreachHandler,
+  sendFollowUpHandler,
   sendOutreachHandler,
   syncRepliesHandler,
 } from "./controllers/outreach.controller.js";
@@ -26,6 +27,12 @@ import {
   finalizeSupplierHandler,
   runAutopilotHandler,
 } from "./controllers/workflow.controller.js";
+import {
+  generateOutcomePlanHandler,
+  generateStructuredRfqHandler,
+  getOutcomeMetricsHandler,
+  runAwardGateHandler,
+} from "./controllers/outcome.controller.js";
 import { closeMongoConnection, pingMongo } from "./lib/db/mongodb.js";
 import { isImapConfigured } from "./lib/email/imapClient.js";
 import { isSmtpConfigured } from "./lib/email/smtpClient.js";
@@ -69,12 +76,17 @@ export function createApp() {
 
   app.post("/api/projects/:projectId/outreach/prepare", prepareOutreachHandler);
   app.post("/api/projects/:projectId/outreach/send", sendOutreachHandler);
+  app.post("/api/projects/:projectId/outreach/followup", sendFollowUpHandler);
   app.post("/api/projects/:projectId/replies/sync", syncRepliesHandler);
   app.post("/api/projects/:projectId/replies/ingest", ingestReplyHandler);
 
   app.post("/api/projects/:projectId/negotiate", generateNegotiationHandler);
   app.post("/api/projects/:projectId/autopilot", runAutopilotHandler);
   app.patch("/api/projects/:projectId/finalize/:supplierId", finalizeSupplierHandler);
+  app.post("/api/projects/:projectId/outcome/plan", generateOutcomePlanHandler);
+  app.post("/api/projects/:projectId/outcome/rfq", generateStructuredRfqHandler);
+  app.post("/api/projects/:projectId/outcome/award", runAwardGateHandler);
+  app.get("/api/projects/:projectId/outcome/metrics", getOutcomeMetricsHandler);
 
   app.use((req, res) => {
     res.status(404).json({ error: "Route not found" });

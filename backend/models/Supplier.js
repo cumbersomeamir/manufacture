@@ -9,6 +9,7 @@ export function createSupplierModel(input = {}) {
     location: input.location || "",
     country: input.country || "",
     website: input.website || "",
+    marketplace: input.marketplace || "",
     sourceUrl: input.sourceUrl || "",
     sourceSnippet: input.sourceSnippet || "",
     exportCapability: input.exportCapability || "Unknown",
@@ -28,6 +29,7 @@ export function createSupplierModel(input = {}) {
       ? Math.min(1, Math.max(0, input.confidenceScore))
       : 0.5,
     riskFlags: Array.isArray(input.riskFlags) ? input.riskFlags : [],
+    followUpsSent: Number.isFinite(input.followUpsSent) ? Number(input.followUpsSent) : 0,
     selected: Boolean(input.selected),
     status: input.status || "identified",
     createdAt: new Date().toISOString(),

@@ -32,6 +32,10 @@ export function syncReplies(projectId, payload = {}) {
   return apiPost(`/api/projects/${projectId}/replies/sync`, payload);
 }
 
+export function sendFollowUps(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/outreach/followup`, payload);
+}
+
 export function ingestSupplierReply(projectId, payload) {
   return apiPost(`/api/projects/${projectId}/replies/ingest`, payload);
 }
@@ -46,6 +50,22 @@ export function selectSupplier(projectId, supplierId) {
 
 export function runAutopilot(projectId, payload = {}) {
   return apiPost(`/api/projects/${projectId}/autopilot`, payload);
+}
+
+export function generateOutcomePlan(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/outcome/plan`, payload);
+}
+
+export function generateStructuredRfq(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/outcome/rfq`, payload);
+}
+
+export function runAwardGate(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/outcome/award`, payload);
+}
+
+export function refreshOutcomeMetrics(projectId) {
+  return apiGet(`/api/projects/${projectId}/outcome/metrics`);
 }
 
 export function finalizeSupplier(projectId, supplierId) {

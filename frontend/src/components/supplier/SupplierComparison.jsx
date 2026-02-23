@@ -18,6 +18,7 @@ export function SupplierComparison({ suppliers = [], onSelectSupplier }) {
               <tr className="text-left text-muted border-b border-line">
                 <th className="py-2 pr-4">Supplier</th>
                 <th className="py-2 pr-4">Location</th>
+                <th className="py-2 pr-4">Source</th>
                 <th className="py-2 pr-4">Website</th>
                 <th className="py-2 pr-4">Price</th>
                 <th className="py-2 pr-4">MOQ</th>
@@ -34,6 +35,7 @@ export function SupplierComparison({ suppliers = [], onSelectSupplier }) {
                     <p className="text-xs text-muted">{supplier.email || "No email"}</p>
                   </td>
                   <td className="py-3 pr-4">{supplier.location || "-"}</td>
+                  <td className="py-3 pr-4">{supplier.marketplace || "web"}</td>
                   <td className="py-3 pr-4">
                     {supplier.website ? (
                       <a

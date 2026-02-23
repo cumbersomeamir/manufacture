@@ -4,6 +4,8 @@ import { createConversationModel } from "../models/Conversation.js";
 import { sendOutreachDrafts } from "../services/outreach.service.js";
 import { parseSupplierReply } from "../services/responseIntelligence.service.js";
 import { loadProjectRepliesFromInbox } from "../services/inboxSync.service.js";
+import { sendSupplierFollowUps } from "../services/followup.service.js";
+import { computeProjectOutcomeMetrics } from "../services/outcomeMetrics.service.js";
 import { getProjectById, patchProject } from "../store/project.store.js";
 import { setChecklistItem, setModuleStatus } from "../services/projectState.service.js";
 import { CHECKLIST_KEYS } from "../services/checklist.service.js";
@@ -182,6 +184,75 @@ export async function sendOutreachHandler(req, res) {
   } catch (error) {
     return res.status(503).json({
       error: "Failed to send outreach",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+export async function sendFollowUpHandler(req, res) {
+  const { projectId } = req.params;
+  const {
+    responseSlaHours,
+    cadenceHours,
+    maxFollowUps,
+  } = req.body || {};
+
+  const project = await getProjectById(projectId);
+  if (!project) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  const policy = project?.outcomeEngine?.followUpPolicy || {
+    responseSlaHours: 24,
+    cadenceHours: 24,
+    maxFollowUps: 2,
+  };
+
+  try {
+    const { eligibleCount, sentConversations, failures } = await sendSupplierFollowUps({
+      projectId,
+      project,
+      responseSlaHours: Number.isFinite(responseSlaHours) ? responseSlaHours : policy.responseSlaHours,
+      cadenceHours: Number.isFinite(cadenceHours) ? cadenceHours : policy.cadenceHours,
+      maxFollowUps: Number.isFinite(maxFollowUps) ? maxFollowUps : policy.maxFollowUps,
+    });
+
+    const updated = await patchProject(projectId, (draft) => {
+      draft.conversations = [...sentConversations, ...draft.conversations];
+
+      draft.suppliers = draft.suppliers.map((supplier) => {
+        const sentForSupplier = sentConversations.filter((entry) => entry.supplierId === supplier.id).length;
+        if (!sentForSupplier) return supplier;
+        const followUpsSent = Number(supplier.followUpsSent || 0) + sentForSupplier;
+        return {
+          ...supplier,
+          followUpsSent,
+          status: supplier.status === "responded" ? "responded" : "contacted",
+          updatedAt: new Date().toISOString(),
+        };
+      });
+
+      if (!draft.outcomeEngine || typeof draft.outcomeEngine !== "object") {
+        draft.outcomeEngine = {};
+      }
+      draft.outcomeEngine.followUpPolicy = {
+        responseSlaHours: Number.isFinite(responseSlaHours) ? responseSlaHours : policy.responseSlaHours,
+        cadenceHours: Number.isFinite(cadenceHours) ? cadenceHours : policy.cadenceHours,
+        maxFollowUps: Number.isFinite(maxFollowUps) ? maxFollowUps : policy.maxFollowUps,
+      };
+      draft.outcomeEngine.kpiSnapshot = computeProjectOutcomeMetrics(draft);
+      return draft;
+    });
+
+    return res.json({
+      project: updated,
+      eligibleCount,
+      sentCount: sentConversations.length,
+      failures,
+    });
+  } catch (error) {
+    return res.status(503).json({
+      error: "Failed to send follow-up emails",
       message: error instanceof Error ? error.message : "Unknown error",
     });
   }

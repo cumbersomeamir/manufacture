@@ -6,12 +6,17 @@ import {
   addSupplier,
   discoverSuppliers,
   finalizeSupplier,
+  generateOutcomePlan,
+  generateStructuredRfq,
   generateConceptImage,
   getProject,
   ingestSupplierReply,
   negotiateWithSupplier,
   prepareOutreach,
+  refreshOutcomeMetrics,
+  runAwardGate,
   runAutopilot,
+  sendFollowUps,
   selectSupplier,
   sendOutreach,
   syncReplies,
@@ -20,6 +25,11 @@ import { ModuleStatusRail } from "@/components/status/ModuleStatusRail";
 import { ChecklistBoard } from "@/components/checklist/ChecklistBoard";
 import { SupplierComparison } from "@/components/supplier/SupplierComparison";
 import { ConversationTimeline } from "@/components/conversation/ConversationTimeline";
+import { OutcomeKpiPanel } from "@/components/outcome/OutcomeKpiPanel";
+import { ShouldCostPanel } from "@/components/outcome/ShouldCostPanel";
+import { VariantsPanel } from "@/components/outcome/VariantsPanel";
+import { StructuredRfqPanel } from "@/components/outcome/StructuredRfqPanel";
+import { AwardDecisionPanel } from "@/components/outcome/AwardDecisionPanel";
 
 function ActionButton({ children, onClick, disabled }) {
   return (
@@ -31,7 +41,7 @@ function ActionButton({ children, onClick, disabled }) {
 
 export function ProjectWorkspace({ projectId }) {
   const [project, setProject] = useState(null);
-  const [busy, setBusy] = useState(false);
+  const [busyActions, setBusyActions] = useState({});
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [replySupplierId, setReplySupplierId] = useState("");
@@ -88,10 +98,15 @@ export function ProjectWorkspace({ projectId }) {
     () => project?.suppliers?.find((supplier) => supplier.selected) || project?.suppliers?.[0] || null,
     [project],
   );
+  const outcomeEngine = project?.outcomeEngine || {};
 
-  async function runAction(action) {
+  function isActionBusy(actionKey) {
+    return Boolean(busyActions[actionKey]);
+  }
+
+  async function runAction(actionKey, action) {
     if (!project) return;
-    setBusy(true);
+    setBusyActions((prev) => ({ ...prev, [actionKey]: true }));
     setError("");
     try {
       const next = await action();
@@ -103,24 +118,28 @@ export function ProjectWorkspace({ projectId }) {
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
-      setBusy(false);
+      setBusyActions((prev) => {
+        const next = { ...prev };
+        delete next[actionKey];
+        return next;
+      });
     }
   }
 
   async function handleDiscover() {
-    await runAction(() => discoverSuppliers(projectId));
+    await runAction("discover", () => discoverSuppliers(projectId));
   }
 
   async function handlePrepare() {
-    await runAction(() => prepareOutreach(projectId));
+    await runAction("prepareOutreach", () => prepareOutreach(projectId));
   }
 
   async function handleSend() {
-    await runAction(() => sendOutreach(projectId));
+    await runAction("sendOutreach", () => sendOutreach(projectId));
   }
 
   async function handleSyncReplies() {
-    await runAction(() => syncReplies(projectId));
+    await runAction("syncReplies", () => syncReplies(projectId));
   }
 
   async function handleIngestReply(event) {
@@ -130,7 +149,7 @@ export function ProjectWorkspace({ projectId }) {
       return;
     }
 
-    await runAction(() =>
+    await runAction("ingestReply", () =>
       ingestSupplierReply(projectId, {
         supplierId: replySupplierId,
         replyText: reply,
@@ -146,7 +165,7 @@ export function ProjectWorkspace({ projectId }) {
       leadTimeDays: negotiationTarget.leadTimeDays ? Number(negotiationTarget.leadTimeDays) : undefined,
     };
 
-    await runAction(() =>
+    await runAction("negotiate", () =>
       negotiateWithSupplier(projectId, {
         supplierId: selectedSupplier?.id,
         target,
@@ -160,15 +179,35 @@ export function ProjectWorkspace({ projectId }) {
       return;
     }
 
-    await runAction(() => generateConceptImage(projectId, { prompt: imagePrompt }));
+    await runAction("generateImage", () => generateConceptImage(projectId, { prompt: imagePrompt }));
   }
 
   async function handleSelectSupplier(supplierId) {
-    await runAction(() => selectSupplier(projectId, supplierId));
+    await runAction("selectSupplier", () => selectSupplier(projectId, supplierId));
   }
 
   async function handleAutopilot() {
-    await runAction(() => runAutopilot(projectId));
+    await runAction("autopilot", () => runAutopilot(projectId));
+  }
+
+  async function handleGenerateOutcomePlan() {
+    await runAction("outcomePlan", () => generateOutcomePlan(projectId, { variantKey: "pilot" }));
+  }
+
+  async function handleGenerateRfqContract() {
+    await runAction("structuredRfq", () => generateStructuredRfq(projectId, { variantKey: "pilot" }));
+  }
+
+  async function handleRunAwardGate() {
+    await runAction("awardGate", () => runAwardGate(projectId, { autoSelect: true }));
+  }
+
+  async function handleSendFollowUps() {
+    await runAction("followUps", () => sendFollowUps(projectId));
+  }
+
+  async function handleRefreshOutcomeMetrics() {
+    await runAction("outcomeMetrics", () => refreshOutcomeMetrics(projectId));
   }
 
   async function handleFinalizeSupplier() {
@@ -176,7 +215,7 @@ export function ProjectWorkspace({ projectId }) {
       setError("Select a supplier first.");
       return;
     }
-    await runAction(() => finalizeSupplier(projectId, selectedSupplier.id));
+    await runAction("finalizeSupplier", () => finalizeSupplier(projectId, selectedSupplier.id));
   }
 
   async function handleAddSupplier(event) {
@@ -186,7 +225,7 @@ export function ProjectWorkspace({ projectId }) {
       return;
     }
 
-    await runAction(() =>
+    await runAction("addSupplier", () =>
       addSupplier(projectId, {
         name: manualSupplier.name,
         email: manualSupplier.email,
@@ -239,18 +278,29 @@ export function ProjectWorkspace({ projectId }) {
       <section className="panel">
         <h2 className="text-lg font-semibold text-ink mb-3">Agent Actions</h2>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <ActionButton onClick={handleAutopilot} disabled={busy}>Run Autopilot</ActionButton>
-          <ActionButton onClick={handleDiscover} disabled={busy}>Discover Suppliers</ActionButton>
-          <ActionButton onClick={handlePrepare} disabled={busy || project.suppliers.length === 0}>Prepare Outreach</ActionButton>
-          <ActionButton onClick={handleSend} disabled={busy || project.outreachDrafts.length === 0}>Send Outreach</ActionButton>
-          <ActionButton onClick={handleSyncReplies} disabled={busy || project.suppliers.length === 0}>Sync Inbox Replies</ActionButton>
-          <ActionButton onClick={handleNegotiate} disabled={busy || !selectedSupplier}>Generate Negotiation</ActionButton>
-          <ActionButton onClick={handleFinalizeSupplier} disabled={busy || !selectedSupplier}>Finalize Supplier</ActionButton>
-          <ActionButton onClick={() => runAction(() => reloadProject())} disabled={busy}>Refresh</ActionButton>
+          <ActionButton onClick={handleAutopilot} disabled={isActionBusy("autopilot")}>Run Autopilot</ActionButton>
+          <ActionButton onClick={handleGenerateOutcomePlan} disabled={isActionBusy("outcomePlan")}>Generate Outcome Plan</ActionButton>
+          <ActionButton onClick={handleGenerateRfqContract} disabled={isActionBusy("structuredRfq")}>Generate Structured RFQ</ActionButton>
+          <ActionButton onClick={handleRunAwardGate} disabled={isActionBusy("awardGate") || project.suppliers.length === 0}>Run Award Gate</ActionButton>
+          <ActionButton onClick={handleSendFollowUps} disabled={isActionBusy("followUps") || project.suppliers.length === 0}>Send Follow-ups</ActionButton>
+          <ActionButton onClick={handleRefreshOutcomeMetrics} disabled={isActionBusy("outcomeMetrics")}>Refresh Outcome Metrics</ActionButton>
+          <ActionButton onClick={handleDiscover} disabled={isActionBusy("discover")}>Discover Suppliers</ActionButton>
+          <ActionButton onClick={handlePrepare} disabled={isActionBusy("prepareOutreach") || project.suppliers.length === 0}>Prepare Outreach</ActionButton>
+          <ActionButton onClick={handleSend} disabled={isActionBusy("sendOutreach") || project.outreachDrafts.length === 0}>Send Outreach</ActionButton>
+          <ActionButton onClick={handleSyncReplies} disabled={isActionBusy("syncReplies") || project.suppliers.length === 0}>Sync Inbox Replies</ActionButton>
+          <ActionButton onClick={handleNegotiate} disabled={isActionBusy("negotiate") || !selectedSupplier}>Generate Negotiation</ActionButton>
+          <ActionButton onClick={handleFinalizeSupplier} disabled={isActionBusy("finalizeSupplier") || !selectedSupplier}>Finalize Supplier</ActionButton>
+          <ActionButton onClick={() => runAction("refreshProject", () => reloadProject())} disabled={isActionBusy("refreshProject")}>Refresh</ActionButton>
         </div>
       </section>
 
       <ChecklistBoard checklist={project.checklist} />
+
+      <OutcomeKpiPanel metrics={outcomeEngine.kpiSnapshot} />
+      <ShouldCostPanel shouldCost={outcomeEngine.shouldCost} />
+      <VariantsPanel variants={outcomeEngine.variants || []} />
+      <StructuredRfqPanel contract={outcomeEngine.structuredRfq} />
+      <AwardDecisionPanel decision={outcomeEngine.awardDecision} />
 
       <section className="panel">
         <h2 className="text-lg font-semibold text-ink mb-3">Nano Banana Product Concept</h2>
@@ -261,7 +311,7 @@ export function ProjectWorkspace({ projectId }) {
             onChange={(e) => setImagePrompt(e.target.value)}
             placeholder="Describe the product concept render"
           />
-          <button type="button" className="btn-secondary" onClick={handleGenerateImage} disabled={busy}>
+          <button type="button" className="btn-secondary" onClick={handleGenerateImage} disabled={isActionBusy("generateImage")}>
             Generate Image
           </button>
         </div>
@@ -306,7 +356,7 @@ export function ProjectWorkspace({ projectId }) {
             placeholder="Country"
           />
           <div className="sm:col-span-2 flex justify-end">
-            <button type="submit" className="btn-secondary" disabled={busy}>Add Supplier</button>
+            <button type="submit" className="btn-secondary" disabled={isActionBusy("addSupplier")}>Add Supplier</button>
           </div>
         </form>
       </section>
@@ -332,7 +382,7 @@ export function ProjectWorkspace({ projectId }) {
               placeholder="Paste supplier email reply to extract price/MOQ/lead time"
             />
           </div>
-          <button type="submit" className="btn-secondary" disabled={busy}>Parse Reply</button>
+          <button type="submit" className="btn-secondary" disabled={isActionBusy("ingestReply")}>Parse Reply</button>
         </form>
       </section>
 

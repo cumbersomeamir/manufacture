@@ -154,3 +154,64 @@ test("autopilot and finalize complete project status flow", async () => {
   assert.equal(finalized.status, 200);
   assert.equal(finalized.body.moduleStatus.success, "validated");
 });
+
+test("outcome engine endpoints generate plan, award decision, and metrics", async () => {
+  const create = await request(app)
+    .post("/api/projects")
+    .send({
+      idea: "A compact desk robot with voice output, mic input, arduino controller, and plastic cover",
+      constraints: { country: "United States", moqTolerance: "300-800" },
+    });
+  assert.equal(create.status, 201);
+  const projectId = create.body.id;
+
+  const supplierA = createSupplierModel({
+    name: "Low Cost Factory",
+    email: "sales@lowcostfactory.com",
+    country: "China",
+    location: "Shenzhen",
+    pricing: { unitPrice: 8.9, currency: "USD" },
+    moq: 600,
+    leadTimeDays: 28,
+    toolingCost: 2300,
+    confidenceScore: 0.72,
+    status: "responded",
+  });
+  const supplierB = createSupplierModel({
+    name: "Fast Turn Supplier",
+    email: "hello@fastturn.com",
+    country: "United States",
+    location: "Texas",
+    pricing: { unitPrice: 10.6, currency: "USD" },
+    moq: 350,
+    leadTimeDays: 16,
+    toolingCost: 1400,
+    confidenceScore: 0.81,
+    status: "responded",
+  });
+
+  await patchProject(projectId, (draft) => {
+    draft.suppliers = [supplierA, supplierB];
+    return draft;
+  });
+
+  const plan = await request(app)
+    .post(`/api/projects/${projectId}/outcome/plan`)
+    .send({ variantKey: "pilot" });
+  assert.equal(plan.status, 200);
+  assert.ok(plan.body.project?.outcomeEngine?.shouldCost);
+  assert.ok(Array.isArray(plan.body.project?.outcomeEngine?.variants));
+  assert.ok(plan.body.project?.outcomeEngine?.structuredRfq);
+
+  const award = await request(app)
+    .post(`/api/projects/${projectId}/outcome/award`)
+    .send({ autoSelect: true });
+  assert.equal(award.status, 200);
+  assert.ok(award.body.decision?.recommendedSupplierId);
+  assert.ok(award.body.project?.suppliers?.some((entry) => entry.selected));
+
+  const metrics = await request(app)
+    .get(`/api/projects/${projectId}/outcome/metrics`);
+  assert.equal(metrics.status, 200);
+  assert.equal(typeof metrics.body.metrics?.funnel?.suppliersIdentified, "number");
+});
