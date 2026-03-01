@@ -9,9 +9,15 @@ export function createSupplierModel(input = {}) {
     location: input.location || "",
     country: input.country || "",
     website: input.website || "",
+    listingUrl: input.listingUrl || "",
     marketplace: input.marketplace || "",
+    platform: input.platform || input.marketplace || "",
     sourceUrl: input.sourceUrl || "",
     sourceSnippet: input.sourceSnippet || "",
+    phone: input.phone || "",
+    whatsappNumber: input.whatsappNumber || "",
+    city: input.city || "",
+    state: input.state || "",
     exportCapability: input.exportCapability || "Unknown",
     distanceComplexity: input.distanceComplexity || "Unknown",
     importFeasibility: input.importFeasibility || "Unknown",
@@ -23,6 +29,16 @@ export function createSupplierModel(input = {}) {
       currency: input?.pricing?.currency || "USD",
     },
     moq: Number.isFinite(input.moq) ? input.moq : null,
+    moqKg: Number.isFinite(input.moqKg)
+      ? input.moqKg
+      : Number.isFinite(input.moq)
+        ? input.moq
+        : null,
+    priceInrPerKg: Number.isFinite(input.priceInrPerKg)
+      ? input.priceInrPerKg
+      : Number.isFinite(input?.pricing?.unitPrice) && String(input?.pricing?.currency || "").toUpperCase() === "INR"
+        ? input.pricing.unitPrice
+        : null,
     leadTimeDays: Number.isFinite(input.leadTimeDays) ? input.leadTimeDays : null,
     toolingCost: Number.isFinite(input.toolingCost) ? input.toolingCost : null,
     confidenceScore: Number.isFinite(input.confidenceScore)

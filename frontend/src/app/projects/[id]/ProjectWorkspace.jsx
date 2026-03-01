@@ -254,6 +254,9 @@ export function ProjectWorkspace({ projectId }) {
           <Link href="/dashboard" className="text-xs text-muted hover:text-ink">← Back to dashboard</Link>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-ink mt-1">{project.name}</h1>
           <p className="text-sm text-muted">{project.productDefinition?.summary || project.idea}</p>
+          <div className="mt-2">
+            <Link href={`/projects/${projectId}/sourcing`} className="btn-ghost">Open Local Sourcing</Link>
+          </div>
         </div>
         <p className="text-xs font-mono text-muted">Updated {new Date(project.updatedAt).toLocaleString()}</p>
       </div>

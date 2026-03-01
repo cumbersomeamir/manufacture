@@ -33,9 +33,21 @@ import {
   getOutcomeMetricsHandler,
   runAwardGateHandler,
 } from "./controllers/outcome.controller.js";
+import {
+  discoverSourcingSuppliersHandler,
+  getSourcingMetricsHandler,
+  ingestSourcingReplyHandler,
+  negotiateSourcingHandler,
+  prepareSourcingOutreachHandler,
+  sendSourcingOutreachHandler,
+  syncSourcingRepliesHandler,
+  twilioWhatsAppWebhookHandler,
+  updateSourcingBriefHandler,
+} from "./controllers/sourcing.controller.js";
 import { closeMongoConnection, pingMongo } from "./lib/db/mongodb.js";
 import { isImapConfigured } from "./lib/email/imapClient.js";
 import { isSmtpConfigured } from "./lib/email/smtpClient.js";
+import { isTwilioConfigured } from "./lib/messaging/twilioWhatsApp.js";
 import { getConfiguredLlmProvider, isLlmConfigured } from "./services/llm.service.js";
 import { getStorageMode } from "./store/project.store.js";
 
@@ -43,6 +55,7 @@ export function createApp() {
   const app = express();
 
   app.use(cors());
+  app.use(express.urlencoded({ extended: true }));
   app.use(express.json({ limit: "20mb" }));
 
   app.get("/api/health", async (req, res) => {
@@ -60,6 +73,7 @@ export function createApp() {
         llmConfigured: isLlmConfigured(),
         llmProvider: getConfiguredLlmProvider(),
         imageConfigured: Boolean(process.env.GEMINI_API_KEY),
+        twilioConfigured: isTwilioConfigured(),
       },
     });
   });
@@ -87,6 +101,17 @@ export function createApp() {
   app.post("/api/projects/:projectId/outcome/rfq", generateStructuredRfqHandler);
   app.post("/api/projects/:projectId/outcome/award", runAwardGateHandler);
   app.get("/api/projects/:projectId/outcome/metrics", getOutcomeMetricsHandler);
+
+  app.post("/api/projects/:projectId/sourcing/brief", updateSourcingBriefHandler);
+  app.post("/api/projects/:projectId/sourcing/discover", discoverSourcingSuppliersHandler);
+  app.post("/api/projects/:projectId/sourcing/outreach/prepare", prepareSourcingOutreachHandler);
+  app.post("/api/projects/:projectId/sourcing/outreach/send", sendSourcingOutreachHandler);
+  app.post("/api/projects/:projectId/sourcing/replies/sync", syncSourcingRepliesHandler);
+  app.post("/api/projects/:projectId/sourcing/replies/ingest", ingestSourcingReplyHandler);
+  app.post("/api/projects/:projectId/sourcing/negotiate", negotiateSourcingHandler);
+  app.get("/api/projects/:projectId/sourcing/metrics", getSourcingMetricsHandler);
+
+  app.post("/api/webhooks/twilio/whatsapp", twilioWhatsAppWebhookHandler);
 
   app.use((req, res) => {
     res.status(404).json({ error: "Route not found" });

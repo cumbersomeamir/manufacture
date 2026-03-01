@@ -80,3 +80,35 @@ export async function generateConceptImage(projectId, payload) {
   const response = await apiPost(`/api/projects/${projectId}/generate-image`, payload);
   return response.project || response;
 }
+
+export function updateSourcingBrief(projectId, payload) {
+  return apiPost(`/api/projects/${projectId}/sourcing/brief`, payload);
+}
+
+export function discoverSourcingSuppliers(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/sourcing/discover`, payload);
+}
+
+export function prepareSourcingOutreach(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/sourcing/outreach/prepare`, payload);
+}
+
+export function sendSourcingOutreach(projectId, payload = {}) {
+  return apiPost(`/api/projects/${projectId}/sourcing/outreach/send`, payload);
+}
+
+export function syncSourcingReplies(projectId) {
+  return apiPost(`/api/projects/${projectId}/sourcing/replies/sync`, {});
+}
+
+export function ingestSourcingReply(projectId, payload) {
+  return apiPost(`/api/projects/${projectId}/sourcing/replies/ingest`, payload);
+}
+
+export function negotiateSourcing(projectId, payload) {
+  return apiPost(`/api/projects/${projectId}/sourcing/negotiate`, payload);
+}
+
+export function getSourcingMetrics(projectId) {
+  return apiGet(`/api/projects/${projectId}/sourcing/metrics`);
+}
